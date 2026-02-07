@@ -1,0 +1,22 @@
+-- فایل: create_database.sql
+CREATE TABLE users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    game_name TEXT NOT NULL,
+    level INTEGER DEFAULT 1,
+    experience INTEGER DEFAULT 0,
+    gold INTEGER DEFAULT 1000,
+    elixir INTEGER DEFAULT 1000,
+    gem INTEGER DEFAULT 50,
+    trophies INTEGER DEFAULT 1000,
+    clan_id INTEGER,
+    role TEXT DEFAULT 'member',
+    last_daily_reward TEXT,
+    last_attack_time TEXT,
+    last_collection_time TEXT DEFAULT CURRENT_TIMESTAMP,
+    warnings INTEGER DEFAULT 0,
+    banned INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- بقیه جداول از کد اصلی کپی شوند
