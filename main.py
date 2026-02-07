@@ -46,7 +46,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 PORT = int(os.getenv('PORT', 8080))
-DATABASE_URL = os.getenv('DATABASE_URL', 'ameleclash.db')
+
+# ***** اصلاح شد: دیتابیس به db.db وصل می‌شود *****
+DATABASE_FILE = 'db.db'
 
 # آی‌دی ادمین اصلی (کشور ابرقدرت)
 ADMIN_ID = 8285797031
@@ -173,8 +175,10 @@ class Form(StatesGroup):
 class Database:
     """کلاس مدیریت دیتابیس SQLite"""
     
-    def __init__(self, db_path: str = DATABASE_URL):
+    # ***** اصلاح شد: به db.db وصل می‌شود *****
+    def __init__(self, db_path: str = DATABASE_FILE):
         self.db_path = db_path
+        logger.info(f"📁 Connecting to database: {self.db_path}")
         self._init_db()
     
     def _init_db(self):
@@ -317,6 +321,8 @@ class Database:
         conn.commit()
         conn.close()
         
+        logger.info("✅ Database tables created successfully")
+        
         # ایجاد کاربر ابرقدرت (ادمین)
         self._create_superpower_country()
     
@@ -328,6 +334,7 @@ class Database:
         # بررسی وجود کاربر ادمین
         cursor.execute('SELECT 1 FROM users WHERE user_id = ?', (ADMIN_ID,))
         if not cursor.fetchone():
+            logger.info("👑 Creating superpower country (admin)...")
             # ایجاد کاربر ادمین
             cursor.execute('''
             INSERT INTO users 
@@ -358,6 +365,8 @@ class Database:
             INSERT INTO buildings (user_id, building_type, level)
             VALUES (?, ?, ?)
             ''', buildings)
+            
+            logger.info("✅ Superpower country created successfully")
         
         conn.commit()
         conn.close()
@@ -439,8 +448,10 @@ class Database:
             # ایجاد ماموریت‌های روزانه
             self.create_daily_missions(user_id)
             
+            logger.info(f"✅ User created: {game_name} (ID: {user_id})")
             return True
         except sqlite3.IntegrityError:
+            logger.warning(f"⚠️ User already exists: {user_id}")
             return False
     
     def update_user(self, user_id: int, **kwargs) -> bool:
@@ -511,8 +522,10 @@ class Database:
             # آپدیت نقش کاربر به رهبر
             self.update_user(leader_id, role=UserRole.LEADER.value, clan_id=clan_id)
             
+            logger.info(f"✅ Clan created: {name} [{tag}] (Leader: {leader_id})")
             return clan_id
         except sqlite3.IntegrityError:
+            logger.warning(f"⚠️ Clan already exists: {name} or tag: {tag}")
             return None
     
     def get_clan_members(self, clan_id: int) -> List[User]:
@@ -544,11 +557,14 @@ class Database:
     
     def add_clan_message(self, clan_id: int, user_id: int, message: str) -> int:
         """اضافه کردن پیام به چت قبیله"""
-        return self.execute_update(
+        message_id = self.execute_update(
             '''INSERT INTO clan_messages (clan_id, user_id, message)
             VALUES (?, ?, ?)''',
             (clan_id, user_id, message)
         )
+        
+        logger.debug(f"💬 Clan message added: Clan {clan_id}, User {user_id}")
+        return message_id
     
     def get_clan_messages(self, clan_id: int, limit: int = 50) -> List[ClanMessage]:
         """دریافت پیام‌های قبیله"""
@@ -576,11 +592,14 @@ class Database:
     # متدهای کمکی برای گزارش‌ها
     def create_report(self, reporter_id: int, reported_user_id: int, message: str, clan_chat_id: int = None) -> int:
         """ایجاد گزارش جدید"""
-        return self.execute_update(
+        report_id = self.execute_update(
             '''INSERT INTO reports (reporter_id, reported_user_id, message, clan_chat_id)
             VALUES (?, ?, ?, ?)''',
             (reporter_id, reported_user_id, message, clan_chat_id)
         )
+        
+        logger.info(f"🚨 Report created: #{report_id} (Reporter: {reporter_id}, Reported: {reported_user_id})")
+        return report_id
     
     def get_pending_reports(self) -> List[Report]:
         """دریافت گزارش‌های در انتظار"""
@@ -625,6 +644,8 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?)''',
                 mission
             )
+        
+        logger.debug(f"🎯 Daily missions created for user: {user_id}")
     
     def get_user_missions(self, user_id: int) -> List[dict]:
         """دریافت ماموریت‌های کاربر"""
@@ -776,6 +797,8 @@ class GameEngine:
                 elixir=new_elixir,
                 last_collection_time=datetime.datetime.now().isoformat()
             )
+            
+            logger.debug(f"💰 Resources collected for user {user_id}: {production}")
         
         return production
     
@@ -853,6 +876,8 @@ class GameEngine:
                  json.dumps({'gold': stolen_gold, 'elixir': stolen_elixir}))
             )
             
+            logger.info(f"⚔️ Attack successful: {attacker_id} -> {defender_id} (Win)")
+            
             return {
                 'result': 'win',
                 'trophies_change': trophies_change,
@@ -886,6 +911,8 @@ class GameEngine:
                 (attacker_id, defender_id, 'lose', -trophies_change, json.dumps({}))
             )
             
+            logger.info(f"⚔️ Attack failed: {attacker_id} -> {defender_id} (Lose)")
+            
             return {
                 'result': 'lose',
                 'trophies_change': -trophies_change,
@@ -917,6 +944,8 @@ class GameEngine:
             gem=user.gem + reward_gem,
             last_daily_reward=today
         )
+        
+        logger.info(f"🎁 Daily reward claimed by user {user_id}")
         
         return {
             'gold': reward_gold,
@@ -991,6 +1020,8 @@ class GameEngine:
                 experience=new_experience
             )
         
+        logger.info(f"🏗️ Building upgraded: {building_type.value} for user {user_id} to level {current_level + 1}")
+        
         return {
             'success': True,
             'new_level': current_level + 1,
@@ -1009,14 +1040,18 @@ class AmeleClashBot:
     def __init__(self):
         self.bot = None
         self.dp = None
-        self.db = Database()
-        self.game = GameEngine(self.db)
+        self.db = None
+        self.game = None
         self.app = None
         self.runner = None
         self.site = None
         
     async def on_startup(self, dp):
         """هنگام راه‌اندازی ربات"""
+        # ***** اصلاح شد: ایجاد دیتابیس با نام db.db *****
+        self.db = Database('db.db')
+        self.game = GameEngine(self.db)
+        
         await self.setup_webhook()
         await self.bot.send_message(ADMIN_ID, "✅ ربات AmeleClashBot راه‌اندازی شد!")
         
@@ -2478,10 +2513,7 @@ if __name__ == '__main__':
     print(f"🤖 توکن ربات: {os.getenv('BOT_TOKEN')[:10]}...")
     print(f"🌐 آدرس Webhook: {os.getenv('WEBHOOK_URL')}")
     print(f"🔢 پورت: {PORT}")
-    
-    # ایجاد فایل دیتابیس
-    db = Database()
-    print("✅ دیتابیس راه‌اندازی شد")
+    print(f"📁 دیتابیس: db.db")
     
     # راه‌اندازی ربات
     try:
@@ -2553,14 +2585,14 @@ if __name__ == '__main__':
 1. ربات به صورت خودکار:
    - Webhook را تنظیم می‌کند
    - وب‌سرور داخلی را راه‌اندازی می‌کند
-   - دیتابیس را ایجاد و مدیریت می‌کند
+   - دیتابیس را با نام db.db ایجاد و مدیریت می‌کند ✅
 
 2. پنل وب:
    - آدرس: https://amele-clash-bot.onrender.com/
    - چت قبیله: https://amele-clash-bot.onrender.com/clan/{clan_id}
 
 3. دیتابیس:
-   - به صورت فایل SQLite ذخیره می‌شود
+   - به صورت فایل SQLite با نام db.db ذخیره می‌شود ✅
    - با هر دیپلوی جدید بازنویسی می‌شود
    - برای ذخیره دائمی، از Addonهای دیتابیس Render استفاده کنید
 
@@ -2579,109 +2611,8 @@ if __name__ == '__main__':
    - Wait Time را افزایش دهید
 
 3. اگر دیتابیس مشکل دارد:
-   - فایل دیتابیس را حذف کنید تا دوباره ساخته شود
+   - فایل db.db را حذف کنید تا دوباره ساخته شود
 
 📞 پشتیبانی:
    برای مشکلات دیپلوی، مستندات Render.com را مطالعه کنید.
-"""
-
-"""
-📁 ساختار فایل دیتابیس:
-
-برای ساخت دستی دیتابیس، این دستورات SQL را اجرا کنید:
-
-1. فایل دیتابیس بسازید:
-   touch ameleclash.db
-
-2. جداول را ایجاد کنید (دستورات در تابع _init_db کلاس Database موجود است)
-
-3. کاربر ابرقدرت را اضافه کنید:
-   INSERT INTO users (user_id, username, game_name, level, gold, elixir, gem, trophies, role)
-   VALUES (8285797031, 'Superpower_Country', '🔥 ابرقدرت جهان 🔥', 100, 999999999, 999999999, 999999, 10000, 'admin');
-
-4. ساختمان‌های ابرقدرت:
-   INSERT INTO buildings (user_id, building_type, level)
-   VALUES 
-   (8285797031, 'town_hall', 10),
-   (8285797031, 'gold_mine', 10),
-   (8285797031, 'elixir_collector', 10),
-   (8285797031, 'barracks', 10),
-   (8285797031, 'storage', 10);
-
-5. تنظیمات لیگ‌ها:
-   INSERT INTO leagues (name, min_trophies, max_trophies, reward_gold, reward_elixir)
-   VALUES 
-   ('برنز', 0, 999, 1000, 500),
-   ('نقره', 1000, 1999, 2000, 1000),
-   ('طلایی', 2000, 2999, 5000, 2500),
-   ('کریستالی', 3000, 3999, 10000, 5000),
-   ('قهرمان', 4000, 9999, 20000, 10000);
-
-نکته: کد به صورت خودکار دیتابیس را می‌سازد، نیازی به ساخت دستی نیست.
-"""
-
-"""
-🎮 ویژگی‌های تکمیلی اضافه شده:
-
-1. سیستم لیگ:
-   - ۵ سطح لیگ مختلف
-   - پاداش فصلی بر اساس لیگ
-
-2. رتبه‌بندی جهانی:
-   - لیست ۱۰ بازیکن برتر
-   - لیست ۵ قبیله برتر
-   - بروزرسانی لحظه‌ای
-
-3. فصل ماهانه:
-   - ریست ماهانه رتبه‌بندی
-   - پاداش‌های فصلی
-
-4. پاداش روزانه:
-   - دریافت پاداش هر ۲۴ ساعت
-   - پاداش بر اساس لول
-
-5. ماموریت روزانه:
-   - ۴ ماموریت روزانه مختلف
-   - پاداش‌های ویژه
-   - ریست روزانه
-
-6. اتحاد قبایل:
-   - امکان همکاری بین قبایل
-   - جنگ‌های اتحادی
-
-7. جنگ قبیله‌ای:
-   - رقابت بین قبایل
-   - پاداش تروفی قبیله
-
-8. سیستم تجربه و لول:
-   - کسب تجربه از فعالیت‌ها
-   - ارتقای لول
-   - افزایش ظرفیت منابع با لول
-
-9. سیستم گزارش پیشرفته:
-   - دکمه گزارش زیر پیام‌ها
-   - ارسال خودکار به ادمین
-   - مدیریت گزارش‌ها در پنل ادمین
-
-10. ضد فحاشی:
-    - لیست کلمات ممنوعه
-    - سیستم اخطار
-    - محدودیت موقت
-
-11. پنل وب:
-    - چت قبیله در مرورگر
-    - رابط کاربری فارسی
-    - طراحی ریسپانسیو
-
-12. امنیت:
-    - جلوگیری از SQL Injection
-    - اعتبارسنجی ورودی‌ها
-    - مدیریت خطاها
-
-13. بهینه‌سازی:
-    - ایندکس‌های دیتابیس
-    - کش در memory
-    - تولید منابع بهینه
-
-ربات آماده استفاده و توسعه است! 🚀
 """
