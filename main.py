@@ -187,6 +187,7 @@ class Database:
         ''')
         
         self.conn.commit()
+        print("✅ جداول دیتابیس ایجاد شد")
     
     # متدهای کاربران
     def get_user(self, user_id: int):
@@ -195,25 +196,41 @@ class Database:
         user = cursor.fetchone()
         if user:
             columns = [desc[0] for desc in cursor.description]
-            return dict(zip(columns, user))
+            user_dict = dict(zip(columns, user))
+            print(f"✅ کاربر یافت شد: {user_dict['game_name']} (ID: {user_id})")
+            return user_dict
+        print(f"⚠️ کاربر با ID {user_id} یافت نشد")
         return None
     
     def create_user(self, user_id: int, username: str, game_name: str):
         cursor = self.conn.cursor()
-        # ایجاد کاربر کشور ابرقدرت
+        
+        # ابتدا بررسی کنیم آیا کاربر وجود دارد یا نه
+        cursor.execute('SELECT COUNT(*) FROM users WHERE user_id = ?', (user_id,))
+        user_exists = cursor.fetchone()[0] > 0
+        
+        if user_exists:
+            print(f"⚠️ کاربر با ID {user_id} از قبل وجود دارد")
+            return self.get_user(user_id)
+        
+        # ایجاد کاربر جدید
+        print(f"🆕 ایجاد کاربر جدید: {game_name} (ID: {user_id})")
+        
         if user_id == ADMIN_ID:
+            # کاربر کشور ابرقدرت
             cursor.execute('''
-                INSERT OR REPLACE INTO users 
+                INSERT INTO users 
                 (user_id, username, game_name, coins, elixir, gems, xp, level) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (user_id, username, game_name, 999999, 999999, 99999, 9999, 100))
             
             cursor.execute('''
-                INSERT OR REPLACE INTO buildings 
+                INSERT INTO buildings 
                 (user_id, townhall_level, mine_level, collector_level, barracks_level) 
                 VALUES (?, ?, ?, ?, ?)
             ''', (user_id, 10, 10, 10, 10))
         else:
+            # کاربر عادی
             cursor.execute('''
                 INSERT INTO users (user_id, username, game_name) 
                 VALUES (?, ?, ?)
@@ -231,11 +248,30 @@ class Database:
         ''', (user_id,))
         
         self.conn.commit()
+        print(f"✅ کاربر {game_name} با موفقیت ایجاد شد")
         return self.get_user(user_id)
+    
+    def update_user(self, user_id: int, **kwargs):
+        """آپدیت اطلاعات کاربر"""
+        if not kwargs:
+            return
+        
+        cursor = self.conn.cursor()
+        set_clause = ', '.join([f'{key} = ?' for key in kwargs.keys()])
+        values = list(kwargs.values()) + [user_id]
+        
+        cursor.execute(f'''
+            UPDATE users 
+            SET {set_clause} 
+            WHERE user_id = ?
+        ''', values)
+        
+        self.conn.commit()
+        print(f"✅ اطلاعات کاربر {user_id} آپدیت شد")
     
     # متدهای قبایل
     def create_clan(self, name: str, leader_id: int, description: str = ""):
-        cursor = self.db.conn.cursor()
+        cursor = self.conn.cursor()
         try:
             cursor.execute('''
                 INSERT INTO clans (name, leader_id, description) 
@@ -252,8 +288,10 @@ class Database:
             ''', (clan_id, leader_id))
             
             self.conn.commit()
+            print(f"✅ قبیله {name} با موفقیت ایجاد شد (ID: {clan_id})")
             return clan_id
         except sqlite3.IntegrityError:
+            print(f"⚠️ قبیله با نام {name} از قبل وجود دارد")
             return None
     
     def get_clan(self, clan_id: int):
@@ -289,7 +327,9 @@ class Database:
             VALUES (?, ?, ?)
         ''', (clan_id, user_id, message))
         self.conn.commit()
-        return cursor.lastrowid
+        message_id = cursor.lastrowid
+        print(f"✅ پیام به قبیله {clan_id} اضافه شد (ID: {message_id})")
+        return message_id
     
     def get_clan_messages(self, clan_id: int, limit: int = 50):
         cursor = self.conn.cursor()
@@ -319,6 +359,7 @@ class Database:
         ''', (message_id,))
         
         self.conn.commit()
+        print(f"✅ گزارش جدید از کاربر {reported_user_id} ثبت شد")
     
     # متدهای حمله
     def add_attack(self, attacker_id: int, defender_id: int, result: str, loot_coins: int, loot_elixir: int):
@@ -354,6 +395,7 @@ class Database:
             ''', (defender_id,))
         
         self.conn.commit()
+        print(f"✅ حمله ثبت شد: {attacker_id} → {defender_id} ({result})")
     
     # متدهای لیگ
     def get_leaderboard(self, limit: int = 20):
@@ -383,6 +425,26 @@ class Database:
             END
         ''')
         self.conn.commit()
+    
+    def get_building(self, user_id: int):
+        """دریافت اطلاعات ساختمان‌های کاربر"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM buildings WHERE user_id = ?', (user_id,))
+        building = cursor.fetchone()
+        if building:
+            columns = [desc[0] for desc in cursor.description]
+            return dict(zip(columns, building))
+        return None
+    
+    def update_building(self, user_id: int, building_type: str, new_level: int):
+        """آپدیت سطح ساختمان"""
+        cursor = self.conn.cursor()
+        cursor.execute(f'''
+            UPDATE buildings 
+            SET {building_type} = ?, last_upgrade_time = ? 
+            WHERE user_id = ?
+        ''', (new_level, int(time.time()), user_id))
+        self.conn.commit()
 
 # کلاس اصلی بازی
 class GameEngine:
@@ -407,14 +469,11 @@ class GameEngine:
         defender_level = defender.get('level', 1)
         
         # تاثیر ساختمان‌ها
-        cursor = self.db.conn.cursor()
-        cursor.execute('SELECT barracks_level FROM buildings WHERE user_id = ?', (attacker_id,))
-        attacker_building = cursor.fetchone()
-        attacker_barracks = attacker_building[0] if attacker_building else 1
+        building = self.db.get_building(attacker_id)
+        attacker_barracks = building.get('barracks_level', 1) if building else 1
         
-        cursor.execute('SELECT townhall_level FROM buildings WHERE user_id = ?', (defender_id,))
-        defender_building = cursor.fetchone()
-        defender_townhall = defender_building[0] if defender_building else 1
+        building = self.db.get_building(defender_id)
+        defender_townhall = building.get('townhall_level', 1) if building else 1
         
         # محاسبه نهایی
         attack_power = (attacker_base + attacker_level * 0.5 + attacker_barracks * 2)
@@ -431,6 +490,9 @@ class GameEngine:
         # بررسی کول‌داون
         now = int(time.time())
         attacker = self.db.get_user(attacker_id)
+        if not attacker:
+            return {"success": False, "message": "⚠️ کاربر یافت نشد!"}
+        
         if now - attacker.get('last_attack_time', 0) < GameConfig.ATTACK_COOLDOWN:
             remaining = GameConfig.ATTACK_COOLDOWN - (now - attacker.get('last_attack_time', 0))
             return {"success": False, "message": f"⏳ باید {remaining} ثانیه صبر کنید!"}
@@ -461,7 +523,7 @@ class GameEngine:
             cursor.execute('UPDATE users SET elixir = elixir + ? WHERE user_id = ?', (loot_elixir, attacker_id))
             
             # آپدیت زمان آخرین حمله
-            cursor.execute('UPDATE users SET last_attack_time = ? WHERE user_id = ?', (now, attacker_id))
+            self.db.update_user(attacker_id, last_attack_time=now)
             
             # ثبت حمله
             self.db.add_attack(
@@ -483,8 +545,7 @@ class GameEngine:
             }
         else:
             # حمله ناموفق
-            cursor = self.db.conn.cursor()
-            cursor.execute('UPDATE users SET last_attack_time = ? WHERE user_id = ?', (now, attacker_id))
+            self.db.update_user(attacker_id, last_attack_time=now)
             
             # ثبت حمله
             self.db.add_attack(
@@ -527,13 +588,7 @@ class GameEngine:
             new_xp -= new_level * 1000
             new_level += 1
         
-        cursor = self.db.conn.cursor()
-        cursor.execute('''
-            UPDATE users 
-            SET xp = ?, level = ? 
-            WHERE user_id = ?
-        ''', (new_xp, new_level, user_id))
-        self.db.conn.commit()
+        self.db.update_user(user_id, xp=new_xp, level=new_level)
     
     def give_daily_reward(self, user_id: int):
         """پاداش روزانه"""
@@ -554,17 +609,14 @@ class GameEngine:
         reward_elixir = 300 + (user['level'] * 50)
         reward_gems = 5 + (user['level'] // 5)
         
-        cursor = self.db.conn.cursor()
-        cursor.execute('''
-            UPDATE users 
-            SET coins = coins + ?, 
-                elixir = elixir + ?, 
-                gems = gems + ?, 
-                last_daily_reward = ? 
-            WHERE user_id = ?
-        ''', (reward_coins, reward_elixir, reward_gems, now, user_id))
+        self.db.update_user(
+            user_id,
+            coins=user['coins'] + reward_coins,
+            elixir=user['elixir'] + reward_elixir,
+            gems=user['gems'] + reward_gems,
+            last_daily_reward=now
+        )
         
-        self.db.conn.commit()
         return {
             "coins": reward_coins,
             "elixir": reward_elixir,
@@ -758,6 +810,8 @@ class AmeleClashBot:
         user_id = message.from_user.id
         username = message.from_user.username or ""
         
+        print(f"🚀 دستور /start از کاربر {user_id} (@{username})")
+        
         user = self.db.get_user(user_id)
         
         if not user:
@@ -775,28 +829,32 @@ class AmeleClashBot:
     async def cmd_profile(self, message: Message):
         """نمایش پروفایل"""
         user_id = message.from_user.id
-        self.update_user_resources(user_id)
+        print(f"📊 درخواست پروفایل از کاربر {user_id}")
+        
         user = self.db.get_user(user_id)
         
         if not user:
             await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
             return
         
+        # آپدیت منابع
+        self.update_user_resources(user_id)
+        user = self.db.get_user(user_id)  # دوباره دریافت کنیم
+        
         # اطلاعات ساختمان‌ها
-        cursor = self.db.conn.cursor()
-        cursor.execute('SELECT * FROM buildings WHERE user_id = ?', (user_id,))
-        buildings = cursor.fetchone()
+        building = self.db.get_building(user_id)
         
         # اطلاعات لیگ
+        cursor = self.db.conn.cursor()
         cursor.execute('SELECT trophies, league FROM leaderboard WHERE user_id = ?', (user_id,))
         league_info = cursor.fetchone()
         
-        if buildings:
+        if building:
             buildings_text = f"""
-🏰 تاون هال: سطح {buildings[1]}
-⛏️ معدن سکه: سطح {buildings[2]}
-⚗️ کالکتور اکسیر: سطح {buildings[3]}
-⚔️ پادگان: سطح {buildings[4]}
+🏰 تاون هال: سطح {building.get('townhall_level', 1)}
+⛏️ معدن سکه: سطح {building.get('mine_level', 1)}
+⚗️ کالکتور اکسیر: سطح {building.get('collector_level', 1)}
+⚔️ پادگان: سطح {building.get('barracks_level', 1)}
 """
         else:
             buildings_text = "ساختمان‌ها: موجود نیست"
@@ -966,6 +1024,9 @@ class AmeleClashBot:
         """پنل ادمین"""
         user_id = message.from_user.id
         
+        print(f"👑 درخواست پنل ادمین از کاربر {user_id}")
+        print(f"🔍 ADMIN_ID: {ADMIN_ID}, user_id: {user_id}")
+        
         if user_id != ADMIN_ID:
             await message.answer("⛔ دسترسی غیرمجاز!")
             return
@@ -992,32 +1053,30 @@ class AmeleClashBot:
             await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
             return
         
-        cursor = self.db.conn.cursor()
-        cursor.execute('SELECT * FROM buildings WHERE user_id = ?', (user_id,))
-        buildings = cursor.fetchone()
+        building = self.db.get_building(user_id)
         
-        if not buildings:
+        if not building:
             await message.answer("⚠️ اطلاعات ساختمان‌ها یافت نشد!")
             return
         
         text = f"""
 🏗️ <b>ساختمان‌های دهکده</b>
 
-🏰 تاون هال: سطح {buildings[1]}
-   ظرفیت منابع: {buildings[1] * 5000}
-   هزینه ارتقا: {buildings[1] * 1000} سکه
+🏰 تاون هال: سطح {building.get('townhall_level', 1)}
+   ظرفیت منابع: {building.get('townhall_level', 1) * 5000}
+   هزینه ارتقا: {building.get('townhall_level', 1) * 1000} سکه
 
-⛏️ معدن سکه: سطح {buildings[2]}
-   تولید: {buildings[2] * GameConfig.BASE_COIN_PRODUCTION} سکه/ثانیه
-   هزینه ارتقا: {buildings[2] * 500} سکه
+⛏️ معدن سکه: سطح {building.get('mine_level', 1)}
+   تولید: {building.get('mine_level', 1) * GameConfig.BASE_COIN_PRODUCTION} سکه/ثانیه
+   هزینه ارتقا: {building.get('mine_level', 1) * 500} سکه
 
-⚗️ کالکتور اکسیر: سطح {buildings[3]}
-   تولید: {buildings[3] * GameConfig.BASE_ELIXIR_PRODUCTION} اکسیر/ثانیه
-   هزینه ارتقا: {buildings[3] * 500} اکسیر
+⚗️ کالکتور اکسیر: سطح {building.get('collector_level', 1)}
+   تولید: {building.get('collector_level', 1) * GameConfig.BASE_ELIXIR_PRODUCTION} اکسیر/ثانیه
+   هزینه ارتقا: {building.get('collector_level', 1) * 500} اکسیر
 
-⚔️ پادگان: سطح {buildings[4]}
-   قدرت حمله: +{buildings[4] * 2}%
-   هزینه ارتقا: {buildings[4] * 800} سکه
+⚔️ پادگان: سطح {building.get('barracks_level', 1)}
+   قدرت حمله: +{building.get('barracks_level', 1) * 2}%
+   هزینه ارتقا: {building.get('barracks_level', 1) * 800} سکه
 """
         
         keyboard = InlineKeyboardBuilder()
@@ -1048,16 +1107,19 @@ class AmeleClashBot:
                 return
             
             username = message.from_user.username or ""
-            self.db.create_user(user_id, username, text)
+            user = self.db.create_user(user_id, username, text)
             
-            await message.answer(
-                f"✅ ثبت نام موفق!\n"
-                f"به دنیای AmeleClash خوش آمدی، <b>{text}</b>!\n\n"
-                f"دهکده شما با موفقیت ساخته شد. برای شروع بازی از منوی زیر استفاده کن:"
-            )
-            
-            await self.show_main_menu(message, self.db.get_user(user_id))
-            await state.clear()
+            if user:
+                await message.answer(
+                    f"✅ ثبت نام موفق!\n"
+                    f"به دنیای AmeleClash خوش آمدی، <b>{text}</b>!\n\n"
+                    f"دهکده شما با موفقیت ساخته شد. برای شروع بازی از منوی زیر استفاده کن:"
+                )
+                
+                await self.show_main_menu(message, user)
+                await state.clear()
+            else:
+                await message.answer("⚠️ خطا در ثبت نام! لطفاً مجدداً تلاش کنید.")
         
         elif current_state == UserStates.waiting_for_clan_name:
             # ساخت قبیله جدید
@@ -1106,8 +1168,9 @@ class AmeleClashBot:
             # بررسی کلمات ممنوعه
             if self.game.check_forbidden_words(text):
                 await message.answer("⚠️ پیام شما حاوی کلمات نامناسب است!")
-                user['warnings'] = user.get('warnings', 0) + 1
+                self.db.update_user(user_id, warnings=user.get('warnings', 0) + 1)
                 
+                user = self.db.get_user(user_id)  # دوباره دریافت کنیم
                 if user['warnings'] >= 3:
                     # بن موقت
                     await message.answer("⚠️ به دلیل ارسال پیام‌های نامناسب، ۱ ساعت از چت قبیله محروم شدید!")
@@ -1139,9 +1202,14 @@ class AmeleClashBot:
         user_id = callback_query.from_user.id
         message = callback_query.message
         
+        print(f"🖱️ کلیک روی دکمه: {data} توسط کاربر {user_id}")
+        
         if data == "main_menu":
             user = self.db.get_user(user_id)
-            await self.show_main_menu(message, user)
+            if user:
+                await self.show_main_menu(message, user)
+            else:
+                await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
         
         elif data == "profile":
             await self.cmd_profile(message)
@@ -1163,6 +1231,10 @@ class AmeleClashBot:
         
         elif data == "clan_create":
             user = self.db.get_user(user_id)
+            if not user:
+                await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
+                return
+                
             if user['coins'] < GameConfig.CLAN_CREATION_COST:
                 await message.answer("⚠️ سکه کافی ندارید!")
                 return
@@ -1244,9 +1316,16 @@ class AmeleClashBot:
             building_type = data.split("_")[1]
             user = self.db.get_user(user_id)
             
-            cursor = self.db.conn.cursor()
-            cursor.execute(f'SELECT {building_type}_level FROM buildings WHERE user_id = ?', (user_id,))
-            current_level = cursor.fetchone()[0]
+            if not user:
+                await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
+                return
+            
+            building = self.db.get_building(user_id)
+            if not building:
+                await message.answer("⚠️ اطلاعات ساختمان‌ها یافت نشد!")
+                return
+            
+            current_level = building.get(f'{building_type}_level', 1)
             
             if current_level >= GameConfig.MAX_BUILDING_LEVEL:
                 await message.answer("⚠️ این ساختمان به حداکثر سطح رسیده!")
@@ -1271,20 +1350,10 @@ class AmeleClashBot:
                 return
             
             # ارتقا
-            cursor.execute(f'''
-                UPDATE buildings 
-                SET {building_type}_level = {building_type}_level + 1 
-                WHERE user_id = ?
-            ''', (user_id,))
+            self.db.update_building(user_id, building_type, current_level + 1)
             
             # کسر منابع
-            cursor.execute(f'''
-                UPDATE users 
-                SET {resource_type} = {resource_type} - ? 
-                WHERE user_id = ?
-            ''', (cost, user_id))
-            
-            self.db.conn.commit()
+            self.db.update_user(user_id, **{resource_type: user[resource_type] - cost})
             
             await message.answer(f"✅ ساختمان با موفقیت ارتقا یافت! هزینه: {cost} {resource_type}")
             await self.cmd_build(message)
@@ -1327,6 +1396,7 @@ class AmeleClashBot:
                     self.db.add_report(user_id, msg_info[2], message_id, "فحاشی")
                     await callback_query.answer("✅ گزارش با موفقیت ارسال شد!")
                 except Exception as e:
+                    print(f"❌ خطا در ارسال گزارش: {e}")
                     await callback_query.answer("⚠️ خطا در ارسال گزارش!")
             else:
                 await callback_query.answer("⚠️ پیام یافت نشد!")
@@ -1389,11 +1459,12 @@ class AmeleClashBot:
     async def show_main_menu(self, message: Message, user: Dict):
         """نمایش منوی اصلی"""
         if not user:
+            await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
             return
         
         # آپدیت منابع
         self.update_user_resources(user['user_id'])
-        user = self.db.get_user(user['user_id'])
+        user = self.db.get_user(user['user_id'])  # دوباره دریافت کنیم
         
         keyboard = InlineKeyboardBuilder()
         
@@ -1444,31 +1515,29 @@ class AmeleClashBot:
         # محاسبه منابع تولید شده
         time_diff = max(0, now - last_update)
         
-        cursor = self.db.conn.cursor()
-        cursor.execute('SELECT mine_level, collector_level FROM buildings WHERE user_id = ?', (user_id,))
-        building = cursor.fetchone()
+        building = self.db.get_building(user_id)
         
         if building:
-            mine_level, collector_level = building
+            mine_level = building.get('mine_level', 1)
+            collector_level = building.get('collector_level', 1)
+            
             # تولید منابع بر اساس سطح ساختمان
             coins_produced = int(time_diff * (GameConfig.BASE_COIN_PRODUCTION * mine_level))
             elixir_produced = int(time_diff * (GameConfig.BASE_ELIXIR_PRODUCTION * collector_level))
             
             # اعمال محدودیت ظرفیت (بر اساس سطح تاون هال)
-            cursor.execute('SELECT townhall_level FROM buildings WHERE user_id = ?', (user_id,))
-            townhall_level = cursor.fetchone()[0]
+            townhall_level = building.get('townhall_level', 1)
             max_capacity = townhall_level * 5000
             
             new_coins = min(user['coins'] + coins_produced, max_capacity)
             new_elixir = min(user['elixir'] + elixir_produced, max_capacity)
             
-            cursor.execute('''
-                UPDATE users 
-                SET coins = ?, elixir = ?, last_resource_update = ? 
-                WHERE user_id = ?
-            ''', (new_coins, new_elixir, now, user_id))
-            
-            self.db.conn.commit()
+            self.db.update_user(
+                user_id,
+                coins=new_coins,
+                elixir=new_elixir,
+                last_resource_update=now
+            )
     
     async def start_webhook(self):
         """راه‌اندازی وب‌هوک"""
@@ -1500,9 +1569,12 @@ class AmeleClashBot:
             await self.setup()
             await self.start_webhook()
             
+            bot_info = await self.bot.get_me()
             print("✅ ربات آماده و در حال اجرا است...")
             print(f"🌐 پنل وب: http://localhost:{PORT}")
-            print(f"🤖 لینک ربات: https://t.me/{(await self.bot.get_me()).username}")
+            print(f"🤖 لینک ربات: https://t.me/{bot_info.username}")
+            print(f"🆔 آی‌دی ربات: {bot_info.id}")
+            print(f"👑 آی‌دی ادمین: {ADMIN_ID}")
             
             # اجرای نامحدود
             await asyncio.Future()  # اجرای نامحدود
@@ -1566,6 +1638,7 @@ if __name__ == "__main__":
     - مطمئن شوید که پورت 8080 در Render باز است
     - آدرس WEBHOOK_URL باید دقیقاً همان آدرس سرویس شما باشد
     - برای دیباگ، لاگ‌ها را در پنل Render مشاهده کنید
+    - برای استفاده از پنل ادمین، آی‌دی تلگرام شما باید 8285797031 باشد
     
     =================================================================
     """
