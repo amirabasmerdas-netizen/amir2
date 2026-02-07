@@ -6,7 +6,6 @@ AmeleClashBot - ربات بازی متنی الهام گرفته از Clash of C
 """
 
 import asyncio
-import aiohttp
 import sqlite3
 import json
 import os
@@ -29,6 +28,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+# برای aiohttp نسخه جدید
+try:
+    from aiohttp import web
+except ImportError:
+    # برای نسخه‌های قدیمی‌تر
+    import aiohttp.web as web
 
 # تنظیمات اولیه
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -227,7 +234,7 @@ class Database:
         return self.get_user(user_id)
     
     def update_user_resources(self, user_id: int):
-        user = self.get_user(user_id)
+        user = self.db.get_user(user_id)
         if not user:
             return
         
@@ -416,7 +423,7 @@ class Database:
 
 # کلاس اصلی بازی
 class GameEngine:
-    def __init__(self, db: Database):
+    def __init__(self, db):
         self.db = db
         self.user_cooldowns = {}  # مدیریت کول‌داون‌ها
     
@@ -603,7 +610,7 @@ class GameEngine:
 
 # وب‌سرور برای پنل قبیله
 class ClanWebPanel:
-    def __init__(self, db: Database):
+    def __init__(self, db):
         self.db = db
     
     async def handle_request(self, request):
@@ -612,7 +619,7 @@ class ClanWebPanel:
         query = request.query
         
         if path == '/':
-            return aiohttp.web.Response(
+            return web.Response(
                 text='<h1>AmeleClashBot Clan Panel</h1><p>برای مشاهده پیام‌های قبیله از /clan/{clan_id} استفاده کنید</p>',
                 content_type='text/html'
             )
@@ -623,7 +630,7 @@ class ClanWebPanel:
                 
                 # اعتبارسنجی توکن (اینجا ساده‌سازی شده)
                 if token != str(clan_id * 12345):  # در واقعیت باید توکن امن‌تری استفاده شود
-                    return aiohttp.web.Response(
+                    return web.Response(
                         text='<h1>دسترسی غیرمجاز</h1>',
                         status=403,
                         content_type='text/html'
@@ -705,11 +712,11 @@ class ClanWebPanel:
                 </html>
                 '''
                 
-                return aiohttp.web.Response(text=html, content_type='text/html')
+                return web.Response(text=html, content_type='text/html')
             except Exception as e:
-                return aiohttp.web.Response(text=f'خطا: {str(e)}', status=500)
+                return web.Response(text=f'خطا: {str(e)}', status=500)
         
-        return aiohttp.web.Response(text='صفحه یافت نشد', status=404)
+        return web.Response(text='صفحه یافت نشد', status=404)
 
 # کلاس اصلی ربات
 class AmeleClashBot:
@@ -720,6 +727,8 @@ class AmeleClashBot:
         self.game = GameEngine(self.db)
         self.web_panel = ClanWebPanel(self.db)
         self.app = None
+        self.runner = None
+        self.site = None
     
     async def setup(self):
         """تنظیم اولیه ربات"""
@@ -735,16 +744,16 @@ class AmeleClashBot:
         # ثبت هندلرها
         self.register_handlers()
         
-        # ایجاد برنامه aiohttp
-        self.app = aiohttp.web.Application()
+        # ایجاد برنامه web
+        self.app = web.Application()
         self.app.router.add_get('/{tail:.*}', self.web_panel.handle_request)
         
         # رانر وب‌سرور
-        self.runner = aiohttp.web.AppRunner(self.app)
+        self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         
-        site = aiohttp.web.TCPSite(self.runner, '0.0.0.0', PORT)
-        await site.start()
+        self.site = web.TCPSite(self.runner, '0.0.0.0', PORT)
+        await self.site.start()
         
         print(f"✅ وب‌سرور روی پورت {PORT} راه‌اندازی شد")
     
@@ -788,12 +797,15 @@ class AmeleClashBot:
     async def cmd_profile(self, message: Message):
         """نمایش پروفایل"""
         user_id = message.from_user.id
-        self.db.update_user_resources(user_id)
         user = self.db.get_user(user_id)
         
         if not user:
             await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
             return
+        
+        # آپدیت منابع
+        self.update_user_resources(user_id)
+        user = self.db.get_user(user_id)
         
         # اطلاعات ساختمان‌ها
         cursor = self.db.conn.cursor()
@@ -890,7 +902,6 @@ class AmeleClashBot:
     async def cmd_attack(self, message: Message, state: FSMContext):
         """منوی حمله"""
         user_id = message.from_user.id
-        self.db.update_user_resources(user_id)
         user = self.db.get_user(user_id)
         
         if not user:
@@ -1000,7 +1011,6 @@ class AmeleClashBot:
     async def cmd_build(self, message: Message):
         """منوی ساختمان‌ها"""
         user_id = message.from_user.id
-        self.db.update_user_resources(user_id)
         user = self.db.get_user(user_id)
         
         if not user:
@@ -1155,7 +1165,8 @@ class AmeleClashBot:
         message = callback_query.message
         
         if data == "main_menu":
-            await self.show_main_menu(message, self.db.get_user(user_id))
+            user = self.db.get_user(user_id)
+            await self.show_main_menu(message, user)
         
         elif data == "profile":
             await self.cmd_profile(message)
@@ -1405,7 +1416,8 @@ class AmeleClashBot:
         if not user:
             return
         
-        self.db.update_user_resources(user['user_id'])
+        # آپدیت منابع
+        self.update_user_resources(user['user_id'])
         user = self.db.get_user(user['user_id'])
         
         keyboard = InlineKeyboardBuilder()
@@ -1445,6 +1457,44 @@ class AmeleClashBot:
         
         await message.answer(welcome_text, reply_markup=keyboard.as_markup())
     
+    def update_user_resources(self, user_id: int):
+        """آپدیت منابع کاربر"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        
+        now = int(time.time())
+        last_update = user.get('last_resource_update', now)
+        
+        # محاسبه منابع تولید شده
+        time_diff = max(0, now - last_update)
+        
+        cursor = self.db.conn.cursor()
+        cursor.execute('SELECT mine_level, collector_level FROM buildings WHERE user_id = ?', (user_id,))
+        building = cursor.fetchone()
+        
+        if building:
+            mine_level, collector_level = building
+            # تولید منابع بر اساس سطح ساختمان
+            coins_produced = int(time_diff * (GameConfig.BASE_COIN_PRODUCTION * mine_level))
+            elixir_produced = int(time_diff * (GameConfig.BASE_ELIXIR_PRODUCTION * collector_level))
+            
+            # اعمال محدودیت ظرفیت (بر اساس سطح تاون هال)
+            cursor.execute('SELECT townhall_level FROM buildings WHERE user_id = ?', (user_id,))
+            townhall_level = cursor.fetchone()[0]
+            max_capacity = townhall_level * 5000
+            
+            new_coins = min(user['coins'] + coins_produced, max_capacity)
+            new_elixir = min(user['elixir'] + elixir_produced, max_capacity)
+            
+            cursor.execute('''
+                UPDATE users 
+                SET coins = ?, elixir = ?, last_resource_update = ? 
+                WHERE user_id = ?
+            ''', (new_coins, new_elixir, now, user_id))
+            
+            self.db.conn.commit()
+    
     async def start_webhook(self):
         """راه‌اندازی وب‌هوک"""
         webhook_url = f"{WEBHOOK_URL}/webhook"
@@ -1460,39 +1510,53 @@ class AmeleClashBot:
     
     async def cleanup(self):
         """پاکسازی منابع"""
-        if hasattr(self, 'runner'):
-            await self.runner.cleanup()
-        
         if self.bot:
             await self.bot.session.close()
+        
+        if self.site:
+            await self.site.stop()
+        
+        if self.runner:
+            await self.runner.cleanup()
+    
+    async def run(self):
+        """اجرای اصلی ربات"""
+        await self.setup()
+        await self.start_webhook()
+        
+        # تنظیم وب‌هوک هندلر
+        handler = SimpleRequestHandler(
+            dispatcher=self.dp,
+            bot=self.bot,
+        )
+        
+        # اضافه کردن هندلر وب‌هوک
+        self.app.router.add_post("/webhook", handler)
+        
+        # تنظیم برنامه
+        setup_application(self.app, self.dp, bot=self.bot)
+        
+        print("✅ ربات آماده و در حال اجرا است...")
+        print(f"🌐 پنل وب: http://localhost:{PORT}")
+        print(f"🤖 لینک ربات: https://t.me/{(await self.bot.get_me()).username}")
+        
+        # اجرای نامحدود
+        try:
+            await asyncio.Future()  # اجرای نامحدود
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await self.cleanup()
 
 # تابع اصلی
 async def main():
     """تابع اصلی اجرای ربات"""
+    print("🚀 در حال راه‌اندازی AmeleClashBot...")
+    
     bot_instance = AmeleClashBot()
     
     try:
-        await bot_instance.setup()
-        await bot_instance.start_webhook()
-        
-        # ثبت وب‌هوک در aiohttp
-        from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-        
-        handler = SimpleRequestHandler(
-            dispatcher=bot_instance.dp,
-            bot=bot_instance.bot,
-        )
-        
-        bot_instance.app.router.add_post("/webhook", handler)
-        setup_application(bot_instance.app, bot_instance.dp, bot=bot_instance.bot)
-        
-        print("✅ ربات آماده و در حال اجرا است...")
-        print(f"🌐 پنل وب: http://localhost:{PORT}")
-        print(f"🤖 لینک ربات: https://t.me/{(await bot_instance.bot.get_me()).username}")
-        
-        # اجرای نامحدود
-        await asyncio.Event().wait()
-        
+        await bot_instance.run()
     except Exception as e:
         print(f"❌ خطا: {e}")
         import traceback
@@ -1532,7 +1596,6 @@ if __name__ == "__main__":
     
     aiogram>=3.0.0
     aiohttp>=3.9.0
-    SQLAlchemy>=2.0.0
     
     =================================================================
     🔧 نکات:
@@ -1540,16 +1603,9 @@ if __name__ == "__main__":
     - مطمئن شوید که پورت 8080 در Render باز است
     - آدرس WEBHOOK_URL باید دقیقاً همان آدرس سرویس شما باشد
     - برای دیباگ، لاگ‌ها را در پنل Render مشاهده کنید
-    - برای امنیت بیشتر، SECRET_TOKEN نیز می‌توانید اضافه کنید
     
     =================================================================
     """
     
-    # لیست requirements برای کپی
-    requirements = """
-aiogram>=3.0.0
-aiohttp>=3.9.0
-"""
-    
-    print("🚀 در حال راه‌اندازی AmeleClashBot...")
+    # اجرای اصلی
     asyncio.run(main())
