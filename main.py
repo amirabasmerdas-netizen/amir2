@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 AmeleClashBot - ربات بازی متنی الهام گرفته از Clash of Clans
-نسخه: 2.0.0
+نسخه: 2.0.1
 تکنولوژی: Python + aiogram 3.x + SQLite + aiohttp
-مخزن: https://github.com/yourusername/ameleclashbot
 """
 
 import asyncio
@@ -12,17 +11,16 @@ import os
 import logging
 import time
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
-from enum import Enum
 
 # Third-party imports
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
-    CallbackQuery, Message, WebAppInfo
+    CallbackQuery, Message
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -30,13 +28,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # aiohttp for web server
 try:
     from aiohttp import web
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 except ImportError:
     import aiohttp.web as web
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # ============================================================================
 # تنظیمات و پیکربندی
@@ -55,84 +54,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8080))
 ADMIN_ID = int(os.getenv("ADMIN_ID", 8285797031))
-DATABASE_URL = os.getenv("DATABASE_URL", "ameleclash.db")
 
 # اعتبارسنجی متغیرهای ضروری
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required!")
-if not WEBHOOK_URL:
-    logger.warning("WEBHOOK_URL not set, using polling mode (not recommended for production)")
-
-# ============================================================================
-# Enum ها و Data Classes
-# ============================================================================
-
-class League(Enum):
-    BRONZE = "برنز"
-    SILVER = "نقره‌ای"
-    GOLD = "طلایی"
-    CRYSTAL = "کریستالی"
-    MASTER = "استاد"
-    CHAMPION = "قهرمان"
-    LEGEND = "افسانه‌ای"
-
-class BuildingType(Enum):
-    TOWNHALL = "townhall"
-    MINE = "mine"
-    COLLECTOR = "collector"
-    BARRACKS = "barracks"
-
-class ClanRole(Enum):
-    MEMBER = "member"
-    ELDER = "elder"
-    CO_LEADER = "co-leader"
-    LEADER = "leader"
-
-@dataclass
-class GameConfig:
-    """پیکربندی بازی"""
-    # منابع اولیه
-    INITIAL_COINS: int = 1000
-    INITIAL_ELIXIR: int = 1000
-    INITIAL_GEMS: int = 50
-    
-    # تولید منابع
-    BASE_COIN_RATE: float = 1.0  # سکه بر ثانیه
-    BASE_ELIXIR_RATE: float = 0.5  # اکسیر بر ثانیه
-    
-    # هزینه‌ها
-    CLAN_CREATION_COST: int = 1000
-    TOWNHALL_UPGRADE_BASE: int = 1000
-    MINE_UPGRADE_BASE: int = 500
-    COLLECTOR_UPGRADE_BASE: int = 500
-    BARRACKS_UPGRADE_BASE: int = 800
-    
-    # زمان‌ها (ثانیه)
-    ATTACK_COOLDOWN: int = 300  # 5 دقیقه
-    DAILY_REWARD_COOLDOWN: int = 86400  # 24 ساعت
-    RESOURCE_UPDATE_INTERVAL: int = 60  # 1 دقیقه
-    
-    # محدودیت‌ها
-    MAX_BUILDING_LEVEL: int = 10
-    MAX_CLAN_MEMBERS: int = 50
-    MAX_USERNAME_LENGTH: int = 20
-    MIN_USERNAME_LENGTH: int = 3
-    
-    # سیستم حمله
-    BASE_ATTACK_POWER: float = 10.0
-    BASE_DEFENSE_POWER: float = 5.0
-    SUPER_COUNTRY_BOOST: float = 5.0
-    
-    # تجربه و لول
-    XP_PER_LEVEL: int = 1000
-    XP_ATTACK_WIN: int = 50
-    XP_ATTACK_LOSE: int = 10
-    
-    # پاداش روزانه
-    DAILY_COINS: int = 500
-    DAILY_ELIXIR: int = 300
-    DAILY_GEMS: int = 5
-    DAILY_MULTIPLIER: float = 1.0  # ضریب بر اساس سطح
 
 # ============================================================================
 # State Classes
@@ -142,34 +67,49 @@ class UserStates(StatesGroup):
     """حالت‌های کاربر برای FSM"""
     waiting_for_name = State()
     waiting_for_clan_name = State()
-    waiting_for_clan_join_code = State()
-    waiting_for_clan_message = State()
-    waiting_for_report_reason = State()
-    waiting_for_admin_action = State()
 
 # ============================================================================
-# Database Layer
+# Game Configuration
+# ============================================================================
+
+@dataclass
+class GameConfig:
+    """پیکربندی بازی"""
+    INITIAL_COINS: int = 1000
+    INITIAL_ELIXIR: int = 1000
+    INITIAL_GEMS: int = 50
+    BASE_COIN_RATE: float = 1.0
+    BASE_ELIXIR_RATE: float = 0.5
+    CLAN_CREATION_COST: int = 1000
+    MAX_BUILDING_LEVEL: int = 10
+    ATTACK_COOLDOWN: int = 300
+    DAILY_REWARD_COOLDOWN: int = 86400
+    TOWNHALL_UPGRADE_BASE: int = 1000
+    MINE_UPGRADE_BASE: int = 500
+    COLLECTOR_UPGRADE_BASE: int = 500
+    BARRACKS_UPGRADE_BASE: int = 800
+    BASE_ATTACK_POWER: float = 10.0
+    BASE_DEFENSE_POWER: float = 5.0
+    SUPER_COUNTRY_BOOST: float = 5.0
+    XP_PER_LEVEL: int = 1000
+    XP_ATTACK_WIN: int = 50
+    XP_ATTACK_LOSE: int = 10
+    DAILY_COINS: int = 500
+    DAILY_ELIXIR: int = 300
+    DAILY_GEMS: int = 5
+
+# ============================================================================
+# Database Manager
 # ============================================================================
 
 class DatabaseManager:
-    """مدیریت دیتابیس با الگوی Singleton"""
-    _instance = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
+    """مدیریت دیتابیس"""
     
     def __init__(self):
-        if self._initialized:
-            return
-        
-        self.db_path = DATABASE_URL
+        self.db_path = 'ameleclash.db'
         self.conn = None
         self._connect()
         self._create_tables()
-        self._initialized = True
         logger.info("✅ DatabaseManager initialized")
     
     def _connect(self):
@@ -178,7 +118,6 @@ class DatabaseManager:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             self.conn.execute("PRAGMA foreign_keys = ON")
-            self.conn.execute("PRAGMA journal_mode = WAL")
             logger.info(f"✅ Connected to database: {self.db_path}")
         except Exception as e:
             logger.error(f"❌ Database connection error: {e}")
@@ -206,10 +145,7 @@ class DatabaseManager:
                 last_resource_update INTEGER DEFAULT (strftime('%s', 'now')),
                 warnings INTEGER DEFAULT 0,
                 banned_until INTEGER DEFAULT 0,
-                banned_reason TEXT DEFAULT NULL,
-                created_at INTEGER DEFAULT (strftime('%s', 'now')),
-                updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-                FOREIGN KEY (clan_id) REFERENCES clans(clan_id) ON DELETE SET NULL
+                created_at INTEGER DEFAULT (strftime('%s', 'now'))
             )
         ''')
         
@@ -221,8 +157,6 @@ class DatabaseManager:
                 mine_level INTEGER DEFAULT 1,
                 collector_level INTEGER DEFAULT 1,
                 barracks_level INTEGER DEFAULT 1,
-                wall_level INTEGER DEFAULT 1,
-                last_upgrade_time INTEGER DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
         ''')
@@ -232,67 +166,10 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS clans (
                 clan_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
-                tag TEXT UNIQUE,
                 description TEXT DEFAULT '',
                 leader_id INTEGER NOT NULL,
-                level INTEGER DEFAULT 1,
-                trophies INTEGER DEFAULT 0,
-                member_count INTEGER DEFAULT 1,
-                max_members INTEGER DEFAULT 50,
-                join_code TEXT UNIQUE,
                 created_at INTEGER DEFAULT (strftime('%s', 'now')),
                 FOREIGN KEY (leader_id) REFERENCES users(user_id)
-            )
-        ''')
-        
-        # پیام‌های قبیله
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS clan_messages (
-                message_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                clan_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                message TEXT NOT NULL,
-                message_type TEXT DEFAULT 'text',
-                reported_count INTEGER DEFAULT 0,
-                created_at INTEGER DEFAULT (strftime('%s', 'now')),
-                FOREIGN KEY (clan_id) REFERENCES clans(clan_id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-        ''')
-        
-        # گزارش‌ها
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS reports (
-                report_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                reporter_id INTEGER NOT NULL,
-                reported_user_id INTEGER NOT NULL,
-                message_id INTEGER,
-                reason TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                reviewed_by INTEGER DEFAULT NULL,
-                reviewed_at INTEGER DEFAULT NULL,
-                created_at INTEGER DEFAULT (strftime('%s', 'now')),
-                FOREIGN KEY (reporter_id) REFERENCES users(user_id),
-                FOREIGN KEY (reported_user_id) REFERENCES users(user_id),
-                FOREIGN KEY (message_id) REFERENCES clan_messages(message_id) ON DELETE CASCADE,
-                FOREIGN KEY (reviewed_by) REFERENCES users(user_id)
-            )
-        ''')
-        
-        # حمله‌ها
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS attacks (
-                attack_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                attacker_id INTEGER NOT NULL,
-                defender_id INTEGER NOT NULL,
-                result TEXT NOT NULL,
-                loot_coins INTEGER DEFAULT 0,
-                loot_elixir INTEGER DEFAULT 0,
-                attacker_trophies_change INTEGER DEFAULT 0,
-                defender_trophies_change INTEGER DEFAULT 0,
-                created_at INTEGER DEFAULT (strftime('%s', 'now')),
-                FOREIGN KEY (attacker_id) REFERENCES users(user_id),
-                FOREIGN KEY (defender_id) REFERENCES users(user_id)
             )
         ''')
         
@@ -302,23 +179,10 @@ class DatabaseManager:
                 user_id INTEGER PRIMARY KEY,
                 trophies INTEGER DEFAULT 0,
                 league TEXT DEFAULT 'bronze',
-                rank INTEGER DEFAULT 0,
                 season_wins INTEGER DEFAULT 0,
-                season_losses INTEGER DEFAULT 0,
-                total_attacks INTEGER DEFAULT 0,
-                total_defenses INTEGER DEFAULT 0,
-                last_season_reset INTEGER DEFAULT (strftime('%s', 'now')),
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
         ''')
-        
-        # ایندکس‌ها
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_clan_id ON users(clan_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_banned ON users(banned_until)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_clan_messages_clan_id ON clan_messages(clan_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_attacks_attacker ON attacks(attacker_id, created_at)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_attacks_defender ON attacks(defender_id, created_at)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_leaderboard_trophies ON leaderboard(trophies DESC)')
         
         self.conn.commit()
         logger.info("✅ Database tables created/verified")
@@ -347,15 +211,15 @@ class DatabaseManager:
             # ایجاد ساختمان‌های ادمین
             cursor.execute('''
                 INSERT INTO buildings 
-                (user_id, townhall_level, mine_level, collector_level, barracks_level, wall_level) 
-                VALUES (?, 20, 20, 20, 20, 20)
+                (user_id, townhall_level, mine_level, collector_level, barracks_level) 
+                VALUES (?, 20, 20, 20, 20)
             ''', (ADMIN_ID,))
             
             # ایجاد رکورد لیگ
             cursor.execute('''
                 INSERT INTO leaderboard 
-                (user_id, trophies, league, rank) 
-                VALUES (?, 99999, 'legend', 1)
+                (user_id, trophies, league) 
+                VALUES (?, 99999, 'legend')
             ''', (ADMIN_ID,))
             
             self.conn.commit()
@@ -373,7 +237,9 @@ class DatabaseManager:
             cursor = self.conn.cursor()
             cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if row:
+                return dict(row)
+            return None
         except Exception as e:
             logger.error(f"❌ Error getting user {user_id}: {e}")
             return None
@@ -425,7 +291,7 @@ class DatabaseManager:
             
             cursor.execute(f'''
                 UPDATE users 
-                SET {set_clause}, updated_at = strftime('%s', 'now') 
+                SET {set_clause}
                 WHERE user_id = ?
             ''', values)
             
@@ -506,10 +372,9 @@ class DatabaseManager:
             cursor = self.conn.cursor()
             cursor.execute(f'''
                 UPDATE buildings 
-                SET {building_type}_level = {building_type}_level + 1, 
-                    last_upgrade_time = ?
+                SET {building_type}_level = {building_type}_level + 1
                 WHERE user_id = ?
-            ''', (int(time.time()), user_id))
+            ''', (user_id,))
             
             cursor.execute('''
                 UPDATE users 
@@ -530,15 +395,11 @@ class DatabaseManager:
     def create_clan(self, name: str, leader_id: int, description: str = "") -> Optional[int]:
         """ایجاد قبیله جدید"""
         try:
-            # تولید کد عضویت تصادفی
-            import random, string
-            join_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            
             cursor = self.conn.cursor()
             cursor.execute('''
-                INSERT INTO clans (name, leader_id, description, join_code, member_count) 
-                VALUES (?, ?, ?, ?, 1)
-            ''', (name, leader_id, description, join_code))
+                INSERT INTO clans (name, leader_id, description) 
+                VALUES (?, ?, ?)
+            ''', (name, leader_id, description))
             
             clan_id = cursor.lastrowid
             
@@ -549,9 +410,6 @@ class DatabaseManager:
             logger.info(f"✅ Clan created: {name} (ID: {clan_id})")
             return clan_id
             
-        except sqlite3.IntegrityError as e:
-            logger.warning(f"Clan name already exists: {name}")
-            return None
         except Exception as e:
             logger.error(f"❌ Error creating clan: {e}")
             self.conn.rollback()
@@ -573,9 +431,8 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             cursor.execute('''
-                SELECT u.*, l.trophies, l.league 
+                SELECT u.* 
                 FROM users u
-                LEFT JOIN leaderboard l ON u.user_id = l.user_id
                 WHERE u.clan_id = ? AND u.banned_until < ?
                 ORDER BY 
                     CASE u.clan_role 
@@ -583,63 +440,13 @@ class DatabaseManager:
                         WHEN 'co-leader' THEN 2
                         WHEN 'elder' THEN 3
                         ELSE 4 
-                    END,
-                    l.trophies DESC
+                    END
             ''', (clan_id, int(time.time())))
             
             return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
             logger.error(f"❌ Error getting clan members: {e}")
             return []
-    
-    # ==================== Attack Methods ====================
-    
-    def record_attack(self, attacker_id: int, defender_id: int, result: str, 
-                     loot_coins: int = 0, loot_elixir: int = 0) -> bool:
-        """ثبت حمله"""
-        try:
-            cursor = self.conn.cursor()
-            
-            # محاسبه تغییر تروفی
-            trophies_change = 10 if "برد" in result else -5
-            
-            cursor.execute('''
-                INSERT INTO attacks 
-                (attacker_id, defender_id, result, loot_coins, loot_elixir, attacker_trophies_change) 
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (attacker_id, defender_id, result, loot_coins, loot_elixir, trophies_change))
-            
-            # آپدیت تروفی‌ها
-            if "برد" in result:
-                cursor.execute('''
-                    UPDATE leaderboard 
-                    SET trophies = trophies + ?, season_wins = season_wins + 1, total_attacks = total_attacks + 1
-                    WHERE user_id = ?
-                ''', (10, attacker_id))
-                cursor.execute('''
-                    UPDATE leaderboard 
-                    SET trophies = GREATEST(trophies - 5, 0), season_losses = season_losses + 1, total_defenses = total_defenses + 1
-                    WHERE user_id = ?
-                ''', (defender_id,))
-            else:
-                cursor.execute('''
-                    UPDATE leaderboard 
-                    SET trophies = GREATEST(trophies - 5, 0), season_losses = season_losses + 1, total_attacks = total_attacks + 1
-                    WHERE user_id = ?
-                ''', (attacker_id,))
-                cursor.execute('''
-                    UPDATE leaderboard 
-                    SET trophies = trophies + ?, season_wins = season_wins + 1, total_defenses = total_defenses + 1
-                    WHERE user_id = ?
-                ''', (5, defender_id,))
-            
-            self.conn.commit()
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error recording attack: {e}")
-            self.conn.rollback()
-            return False
     
     # ==================== Leaderboard Methods ====================
     
@@ -648,8 +455,7 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             cursor.execute('''
-                SELECT u.game_name, u.level, l.trophies, l.league, l.season_wins, l.rank,
-                       RANK() OVER (ORDER BY l.trophies DESC) as current_rank
+                SELECT u.game_name, u.level, l.trophies, l.league, l.season_wins
                 FROM leaderboard l
                 JOIN users u ON l.user_id = u.user_id
                 WHERE u.banned_until < ?
@@ -661,38 +467,6 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"❌ Error getting leaderboard: {e}")
             return []
-    
-    def update_leagues(self):
-        """آپدیت لیگ کاربران"""
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute('''
-                UPDATE leaderboard 
-                SET league = CASE 
-                    WHEN trophies >= 5000 THEN 'legend'
-                    WHEN trophies >= 3000 THEN 'champion'
-                    WHEN trophies >= 2000 THEN 'master'
-                    WHEN trophies >= 1000 THEN 'crystal'
-                    WHEN trophies >= 500 THEN 'gold'
-                    WHEN trophies >= 200 THEN 'silver'
-                    ELSE 'bronze'
-                END
-            ''')
-            
-            # آپدیت رتبه
-            cursor.execute('''
-                UPDATE leaderboard 
-                SET rank = (
-                    SELECT rank FROM (
-                        SELECT user_id, ROW_NUMBER() OVER (ORDER BY trophies DESC) as rank
-                        FROM leaderboard
-                    ) ranked WHERE ranked.user_id = leaderboard.user_id
-                )
-            ''')
-            
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"❌ Error updating leagues: {e}")
     
     def close(self):
         """بستن اتصال دیتابیس"""
@@ -726,10 +500,6 @@ class GameEngine:
             remaining = self.config.ATTACK_COOLDOWN - (now - attacker.get('last_attack_time', 0))
             return {"success": False, "message": f"⏳ {remaining} ثانیه تا حمله بعدی"}
         
-        # بررسی بن بودن
-        if defender.get('banned_until', 0) > now:
-            return {"success": False, "message": "⚠️ این کاربر بن شده است"}
-        
         # محاسبه قدرت
         attacker_building = self.db.get_building(attacker_id)
         defender_building = self.db.get_building(defender_id)
@@ -758,7 +528,7 @@ class GameEngine:
         
         if random.random() < attack_chance:
             # برد
-            loot_percentage = random.uniform(0.1, 0.3)  # 10-30% غنیمت
+            loot_percentage = random.uniform(0.1, 0.3)
             loot_coins = min(int(defender['coins'] * loot_percentage), 5000)
             loot_elixir = min(int(defender['elixir'] * loot_percentage), 5000)
             
@@ -768,15 +538,15 @@ class GameEngine:
             self.db.update_user(attacker_id, coins=attacker['coins'] + loot_coins)
             self.db.update_user(attacker_id, elixir=attacker['elixir'] + loot_elixir)
             
-            # ثبت حمله
-            self.db.record_attack(
-                attacker_id, defender_id, "برد",
-                loot_coins, loot_elixir
-            )
-            
             # آپدیت زمان حمله و XP
             self.db.update_user(attacker_id, last_attack_time=now)
             self._add_xp(attacker_id, self.config.XP_ATTACK_WIN)
+            
+            # آپدیت تروفی
+            cursor = self.db.conn.cursor()
+            cursor.execute('UPDATE leaderboard SET trophies = trophies + 10 WHERE user_id = ?', (attacker_id,))
+            cursor.execute('UPDATE leaderboard SET trophies = GREATEST(trophies - 5, 0) WHERE user_id = ?', (defender_id,))
+            self.db.conn.commit()
             
             return {
                 "success": True,
@@ -789,8 +559,13 @@ class GameEngine:
         else:
             # باخت
             self.db.update_user(attacker_id, last_attack_time=now)
-            self.db.record_attack(attacker_id, defender_id, "باخت")
             self._add_xp(attacker_id, self.config.XP_ATTACK_LOSE)
+            
+            # آپدیت تروفی
+            cursor = self.db.conn.cursor()
+            cursor.execute('UPDATE leaderboard SET trophies = GREATEST(trophies - 5, 0) WHERE user_id = ?', (attacker_id,))
+            cursor.execute('UPDATE leaderboard SET trophies = trophies + 5 WHERE user_id = ?', (defender_id,))
+            self.db.conn.commit()
             
             return {
                 "success": True,
@@ -862,316 +637,6 @@ class GameEngine:
         return any(word in text_lower for word in forbidden_words)
 
 # ============================================================================
-# Web Panel
-# ============================================================================
-
-class ClanWebPanel:
-    """پنل وب برای مشاهده پیام‌های قبیله"""
-    
-    def __init__(self, db: DatabaseManager):
-        self.db = db
-    
-    async def handle_request(self, request):
-        """مدیریت درخواست‌های HTTP"""
-        path = request.path
-        
-        if path == '/':
-            return await self._serve_homepage()
-        elif path.startswith('/clan/'):
-            return await self._serve_clan_messages(request)
-        elif path == '/health':
-            return web.Response(text='OK', status=200)
-        else:
-            return web.Response(text='404 Not Found', status=404)
-    
-    async def _serve_homepage(self):
-        """صفحه اصلی"""
-        html = '''
-        <!DOCTYPE html>
-        <html dir="rtl">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>AmeleClashBot - پنل قبیله</title>
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body {
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #1a2980, #26d0ce);
-                    color: white;
-                    min-height: 100vh;
-                    padding: 20px;
-                }
-                .container {
-                    max-width: 1000px;
-                    margin: 0 auto;
-                    background: rgba(0, 0, 0, 0.8);
-                    border-radius: 20px;
-                    padding: 30px;
-                    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.5);
-                    backdrop-filter: blur(10px);
-                }
-                header {
-                    text-align: center;
-                    margin-bottom: 30px;
-                    padding-bottom: 20px;
-                    border-bottom: 3px solid #FFD700;
-                }
-                h1 {
-                    color: #FFD700;
-                    font-size: 2.5em;
-                    margin-bottom: 10px;
-                    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
-                }
-                .subtitle {
-                    color: #aaa;
-                    font-size: 1.1em;
-                }
-                .info-box {
-                    background: rgba(255, 255, 255, 0.1);
-                    border-radius: 10px;
-                    padding: 20px;
-                    margin: 20px 0;
-                    border-right: 5px solid #4CAF50;
-                }
-                .warning {
-                    background: rgba(255, 87, 34, 0.2);
-                    border-color: #FF5722;
-                }
-                .feature-list {
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                    gap: 20px;
-                    margin-top: 30px;
-                }
-                .feature {
-                    background: rgba(255, 255, 255, 0.05);
-                    padding: 20px;
-                    border-radius: 10px;
-                    text-align: center;
-                    transition: transform 0.3s;
-                }
-                .feature:hover {
-                    transform: translateY(-5px);
-                    background: rgba(255, 255, 255, 0.1);
-                }
-                .feature-icon {
-                    font-size: 2em;
-                    margin-bottom: 10px;
-                }
-                footer {
-                    text-align: center;
-                    margin-top: 40px;
-                    padding-top: 20px;
-                    border-top: 1px solid rgba(255, 255, 255, 0.1);
-                    color: #888;
-                    font-size: 0.9em;
-                }
-                .btn {
-                    display: inline-block;
-                    background: linear-gradient(45deg, #FFD700, #FFA000);
-                    color: #000;
-                    padding: 12px 24px;
-                    border-radius: 25px;
-                    text-decoration: none;
-                    font-weight: bold;
-                    margin: 10px;
-                    transition: all 0.3s;
-                    border: none;
-                    cursor: pointer;
-                }
-                .btn:hover {
-                    transform: scale(1.05);
-                    box-shadow: 0 5px 15px rgba(255, 215, 0, 0.4);
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <header>
-                    <h1>🏰 AmeleClashBot</h1>
-                    <p class="subtitle">پنل مدیریت قبیله - نسخه حرفه‌ای</p>
-                </header>
-                
-                <div class="info-box">
-                    <h2>📖 راهنمای استفاده</h2>
-                    <p>برای مشاهده پیام‌های قبیله، از ربات تلگرام لینک مخصوص قبیله خود را دریافت کنید.</p>
-                    <p>این پنل فقط برای اعضای قبیله قابل دسترسی است و نیاز به احراز هویت دارد.</p>
-                </div>
-                
-                <div class="feature-list">
-                    <div class="feature">
-                        <div class="feature-icon">💬</div>
-                        <h3>چت قبیله</h3>
-                        <p>مشاهده تمام پیام‌های قبیله به صورت زنده</p>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">👥</div>
-                        <h3>مدیریت اعضا</h3>
-                        <p>مدیریت اعضای قبیله و نقش‌های آنها</p>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">⚔️</div>
-                        <h3>آمار جنگ</h3>
-                        <p>مشاهده آمار حمله و دفاع اعضا</p>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">📊</div>
-                        <h3>گزارش‌ها</h3>
-                        <p>گزارش‌های سیستمی و مدیریتی</p>
-                    </div>
-                </div>
-                
-                <div class="info-box warning">
-                    <h2>⚠️ امنیت</h2>
-                    <p>• تمام ارتباطات به صورت رمزگذاری شده انجام می‌شود</p>
-                    <p>• دسترسی فقط برای اعضای تأیید شده قبیله</p>
-                    <p>• لاگ کامل تمام فعالیت‌ها</p>
-                </div>
-                
-                <footer>
-                    <p>© 2024 AmeleClashBot - کلیه حقوق محفوظ است</p>
-                    <p>نسخه: 2.0.0 | توسعه یافته با ❤️</p>
-                </footer>
-            </div>
-        </body>
-        </html>
-        '''
-        
-        return web.Response(text=html, content_type='text/html')
-    
-    async def _serve_clan_messages(self, request):
-        """نمایش پیام‌های قبیله"""
-        try:
-            # استخراج پارامترها
-            clan_id = int(request.path.split('/')[2])
-            token = request.query.get('token', '')
-            
-            # احراز هویت ساده (در واقعیت باید بهتر باشد)
-            clan = self.db.get_clan(clan_id)
-            if not clan:
-                return web.Response(text='<h1>قبیله یافت نشد</h1>', status=404, content_type='text/html')
-            
-            if token != clan.get('join_code', ''):
-                return web.Response(text='<h1>دسترسی غیرمجاز</h1>', status=403, content_type='text/html')
-            
-            # دریافت پیام‌ها
-            cursor = self.db.conn.cursor()
-            cursor.execute('''
-                SELECT cm.*, u.game_name, u.username 
-                FROM clan_messages cm
-                JOIN users u ON cm.user_id = u.user_id
-                WHERE cm.clan_id = ? 
-                ORDER BY cm.created_at DESC 
-                LIMIT 100
-            ''', (clan_id,))
-            
-            messages = cursor.fetchall()
-            
-            # تولید HTML
-            html = f'''
-            <!DOCTYPE html>
-            <html dir="rtl">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>پیام‌های قبیله {clan['name']}</title>
-                <style>
-                    body {{
-                        font-family: Tahoma, sans-serif;
-                        background: linear-gradient(135deg, #1a2980, #26d0ce);
-                        color: white;
-                        padding: 20px;
-                    }}
-                    .container {{
-                        max-width: 800px;
-                        margin: 0 auto;
-                        background: rgba(0,0,0,0.8);
-                        border-radius: 15px;
-                        padding: 20px;
-                        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-                    }}
-                    h1 {{
-                        text-align: center;
-                        color: #FFD700;
-                        border-bottom: 2px solid #FFD700;
-                        padding-bottom: 10px;
-                        margin-bottom: 20px;
-                    }}
-                    .message {{
-                        background: rgba(255,255,255,0.1);
-                        border-radius: 10px;
-                        padding: 15px;
-                        margin: 10px 0;
-                        border-right: 5px solid #4CAF50;
-                        transition: transform 0.2s;
-                    }}
-                    .message:hover {{
-                        transform: translateX(-5px);
-                        background: rgba(255,255,255,0.15);
-                    }}
-                    .user {{
-                        color: #FFD700;
-                        font-weight: bold;
-                        margin-bottom: 5px;
-                        font-size: 1.1em;
-                    }}
-                    .time {{
-                        color: #aaa;
-                        font-size: 0.8em;
-                        text-align: left;
-                        margin-top: 5px;
-                    }}
-                    .admin-message {{
-                        border-right-color: #FF5722;
-                        background: rgba(255, 87, 34, 0.1);
-                    }}
-                    .message-content {{
-                        margin: 10px 0;
-                        line-height: 1.6;
-                    }}
-                    .stats {{
-                        text-align: center;
-                        color: #aaa;
-                        margin-bottom: 20px;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1>🏰 پیام‌های قبیله {clan['name']}</h1>
-                    <div class="stats">📊 تعداد پیام‌ها: {len(messages)} | آخرین به‌روزرسانی: {datetime.now().strftime('%H:%M')}</div>
-            '''
-            
-            for msg in messages:
-                msg_dict = dict(msg)
-                time_str = datetime.fromtimestamp(msg_dict['created_at']).strftime('%Y/%m/%d %H:%M')
-                is_admin = msg_dict['user_id'] == ADMIN_ID
-                
-                html += f'''
-                <div class="message {'admin-message' if is_admin else ''}">
-                    <div class="user">
-                        {'👑' if is_admin else '👤'} {msg_dict['game_name']} 
-                        <small>(@{msg_dict['username'] or 'ناشناس'})</small>
-                    </div>
-                    <div class="message-content">{msg_dict['message']}</div>
-                    <div class="time">🕐 {time_str}</div>
-                </div>
-                '''
-            
-            html += '''
-                </div>
-            </body>
-            </html>
-            '''
-            
-            return web.Response(text=html, content_type='text/html')
-            
-        except Exception as e:
-            logger.error(f"❌ Error serving clan messages: {e}")
-            return web.Response(text=f'خطا: {str(e)}', status=500)
-
-# ============================================================================
 # Main Bot Class
 # ============================================================================
 
@@ -1183,7 +648,6 @@ class AmeleClashBot:
         self.dp = None
         self.db = DatabaseManager()
         self.game = GameEngine(self.db)
-        self.web_panel = ClanWebPanel(self.db)
         self.app = None
         self.runner = None
         self.site = None
@@ -1207,31 +671,32 @@ class AmeleClashBot:
         self.dp = Dispatcher(storage=MemoryStorage())
         
         # ثبت هندلرها
-        self._register_handlers()
+        await self._register_handlers()
         
-        # ایجاد برنامه وب
-        self.app = web.Application()
-        self.app.router.add_get('/{tail:.*}', self.web_panel.handle_request)
-        
-        # تنظیم وب‌هوک
-        handler = SimpleRequestHandler(
-            dispatcher=self.dp,
-            bot=self.bot,
-        )
-        self.app.router.add_post("/webhook", handler)
-        
-        # تنظیم application
-        setup_application(self.app, self.dp, bot=self.bot)
-        
-        # راه‌اندازی سرور
-        self.runner = web.AppRunner(self.app)
-        await self.runner.setup()
-        self.site = web.TCPSite(self.runner, '0.0.0.0', PORT)
-        await self.site.start()
-        
-        logger.info(f"✅ Web server started on port {PORT}")
+        # اگر WEBHOOK_URL تنظیم شده، وب‌سرور ایجاد کن
+        if WEBHOOK_URL:
+            # ایجاد برنامه وب
+            self.app = web.Application()
+            
+            # تنظیم وب‌هوک
+            handler = SimpleRequestHandler(
+                dispatcher=self.dp,
+                bot=self.bot,
+            )
+            self.app.router.add_post("/webhook", handler)
+            
+            # تنظیم application
+            setup_application(self.app, self.dp, bot=self.bot)
+            
+            # راه‌اندازی سرور
+            self.runner = web.AppRunner(self.app)
+            await self.runner.setup()
+            self.site = web.TCPSite(self.runner, '0.0.0.0', PORT)
+            await self.site.start()
+            
+            logger.info(f"✅ Web server started on port {PORT}")
     
-    def _register_handlers(self):
+    async def _register_handlers(self):
         """ثبت تمام هندلرهای ربات"""
         
         # ========== Command Handlers ==========
@@ -1300,7 +765,6 @@ class AmeleClashBot:
                     "🏛️ <b>قبیله:</b>",
                     f"  • نام: {clan['name']}",
                     f"  • نقش: {user['clan_role']}",
-                    f"  • اعضا: {clan['member_count']}/{clan['max_members']}",
                 ])
             
             # دکمه‌ها
@@ -1323,16 +787,15 @@ class AmeleClashBot:
                 await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
                 return
             
-            # دریافت لیست هدف‌ها
+            # دریافت لیست هدف‌ها (به جز خود کاربر و کاربران بن شده)
             cursor = self.db.conn.cursor()
             cursor.execute('''
-                SELECT u.user_id, u.game_name, u.level, l.trophies, l.league 
+                SELECT u.user_id, u.game_name, u.level 
                 FROM users u
-                JOIN leaderboard l ON u.user_id = l.user_id
-                WHERE u.user_id != ? AND u.banned_until < ? AND u.user_id != ?
-                ORDER BY l.trophies DESC 
+                WHERE u.user_id != ? AND u.banned_until < ?
+                ORDER BY RANDOM()
                 LIMIT 5
-            ''', (user_id, int(time.time()), ADMIN_ID))
+            ''', (user_id, int(time.time())))
             
             targets = cursor.fetchall()
             
@@ -1356,8 +819,7 @@ class AmeleClashBot:
             await message.answer(
                 "⚔️ <b>سیستم حمله</b>\n\n"
                 "هدف حمله را انتخاب کنید:\n"
-                "(هر حمله ۵ دقیقه کول‌داون دارد)\n\n"
-                "🎯 <i>توصیه: بازیکنان با تروفی کمتر را هدف قرار دهید!</i>",
+                "(هر حمله ۵ دقیقه کول‌داون دارد)",
                 reply_markup=keyboard.as_markup(),
                 parse_mode=ParseMode.HTML
             )
@@ -1441,21 +903,19 @@ class AmeleClashBot:
                 text = [
                     f"🏛️ <b>قبیله {clan['name']}</b>",
                     f"👑 رهبر: {clan['leader_id']}",
-                    f"👥 اعضا: {len(members)}/{clan['max_members']}",
-                    f"🏆 تروفی: {clan['trophies']:,}",
+                    f"👥 اعضا: {len(members)} نفر",
                     "",
                     "<b>چه کاری انجام دهیم؟</b>"
                 ]
                 
                 keyboard.row(
-                    InlineKeyboardButton(text="💬 چت قبیله", callback_data="clan_chat"),
                     InlineKeyboardButton(text="👥 اعضا", callback_data="clan_members"),
+                    InlineKeyboardButton(text="💬 چت", callback_data="clan_chat"),
                 )
                 
                 if user['clan_role'] in ['leader', 'co-leader']:
                     keyboard.row(
                         InlineKeyboardButton(text="⚙️ مدیریت", callback_data="clan_manage"),
-                        InlineKeyboardButton(text="🔗 لینک پنل", callback_data="clan_panel"),
                     )
                 
                 keyboard.row(InlineKeyboardButton(text="🚪 خروج", callback_data="clan_leave"))
@@ -1472,9 +932,7 @@ class AmeleClashBot:
                 
                 keyboard.row(
                     InlineKeyboardButton(text="🏛️ ساخت قبیله", callback_data="clan_create"),
-                    InlineKeyboardButton(text="🔍 جستجو", callback_data="clan_search"),
                 )
-                keyboard.row(InlineKeyboardButton(text="📊 لیست قبایل", callback_data="clan_list"))
             
             keyboard.row(InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="main_menu"))
             
@@ -1487,7 +945,7 @@ class AmeleClashBot:
         @self.dp.message(Command("leaderboard"))
         async def cmd_leaderboard(message: Message):
             """رتبه‌بندی جهانی"""
-            leaderboard = self.db.get_leaderboard(15)
+            leaderboard = self.db.get_leaderboard(10)
             
             text = ["🏆 <b>رتبه‌بندی جهانی</b>", ""]
             
@@ -1496,15 +954,13 @@ class AmeleClashBot:
                 text.append(
                     f"{medal} <b>{player['game_name']}</b> (سطح {player['level']})"
                     f"\n   🏆 {player['trophies']:,} | لیگ: {player['league']}"
-                    f" | برد: {player['season_wins']}"
                 )
             
             keyboard = InlineKeyboardBuilder()
             keyboard.row(
                 InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="leaderboard_refresh"),
-                InlineKeyboardButton(text="📊 آمار من", callback_data="my_stats"),
+                InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="main_menu"),
             )
-            keyboard.row(InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="main_menu"))
             
             await message.answer(
                 "\n".join(text),
@@ -1559,11 +1015,7 @@ class AmeleClashBot:
                 InlineKeyboardButton(text="🏛️ قبایل", callback_data="admin_clans"),
             )
             keyboard.row(
-                InlineKeyboardButton(text="⚠️ گزارش‌ها", callback_data="admin_reports"),
                 InlineKeyboardButton(text="📊 آمار", callback_data="admin_stats"),
-            )
-            keyboard.row(
-                InlineKeyboardButton(text="🚫 بن کاربر", callback_data="admin_ban"),
                 InlineKeyboardButton(text="🔄 به‌روزرسانی", callback_data="admin_update"),
             )
             
@@ -1586,12 +1038,12 @@ class AmeleClashBot:
             config = GameConfig()
             
             # اعتبارسنجی
-            if len(game_name) < config.MIN_USERNAME_LENGTH:
-                await message.answer(f"⚠️ نام باید حداقل {config.MIN_USERNAME_LENGTH} حرف باشد!")
+            if len(game_name) < 3:
+                await message.answer("⚠️ نام باید حداقل ۳ حرف باشد!")
                 return
             
-            if len(game_name) > config.MAX_USERNAME_LENGTH:
-                await message.answer(f"⚠️ نام نمی‌تواند بیشتر از {config.MAX_USERNAME_LENGTH} حرف باشد!")
+            if len(game_name) > 20:
+                await message.answer("⚠️ نام نمی‌تواند بیشتر از ۲۰ حرف باشد!")
                 return
             
             if self.game.check_forbidden_words(game_name):
@@ -1732,6 +1184,12 @@ class AmeleClashBot:
             )
             await callback.answer()
         
+        @self.dp.callback_query(F.data == "attack")
+        async def callback_attack_menu(callback: CallbackQuery):
+            """بازگشت به منوی حمله"""
+            await cmd_attack(callback.message)
+            await callback.answer()
+        
         @self.dp.callback_query(F.data.startswith("upgrade_"))
         async def callback_upgrade(callback: CallbackQuery):
             """ارتقای ساختمان"""
@@ -1832,7 +1290,11 @@ class AmeleClashBot:
             await state.set_state(UserStates.waiting_for_clan_name)
             await callback.answer()
         
-        # ========== Admin Callback Handlers ==========
+        @self.dp.callback_query(F.data == "leaderboard_refresh")
+        async def callback_leaderboard_refresh(callback: CallbackQuery):
+            """بروزرسانی رتبه‌بندی"""
+            await cmd_leaderboard(callback.message)
+            await callback.answer()
         
         @self.dp.callback_query(F.data.startswith("admin_"))
         async def callback_admin(callback: CallbackQuery):
@@ -1851,10 +1313,6 @@ class AmeleClashBot:
                 cursor.execute('SELECT COUNT(*) as total FROM users')
                 total = cursor.fetchone()['total']
                 
-                cursor.execute('SELECT COUNT(*) as banned FROM users WHERE banned_until > ?', 
-                             (int(time.time()),))
-                banned = cursor.fetchone()['banned']
-                
                 cursor.execute('SELECT COUNT(*) as active FROM users WHERE last_resource_update > ?', 
                              (int(time.time()) - 86400,))
                 active = cursor.fetchone()['active']
@@ -1864,7 +1322,6 @@ class AmeleClashBot:
                     "",
                     f"👥 کاربران کل: {total:,}",
                     f"✅ کاربران فعال (24h): {active:,}",
-                    f"🚫 کاربران بن شده: {banned:,}",
                     f"🎮 نسبت فعال: {(active/total*100):.1f}%",
                 ]
                 
@@ -1876,29 +1333,65 @@ class AmeleClashBot:
                 cursor.execute('SELECT COUNT(*) as clans FROM clans')
                 clans = cursor.fetchone()['clans']
                 
-                cursor.execute('SELECT SUM(member_count) as total_members FROM clans')
-                clan_members = cursor.fetchone()['total_members'] or 0
-                
-                cursor.execute('SELECT COUNT(*) as attacks FROM attacks')
-                attacks = cursor.fetchone()['attacks']
-                
-                cursor.execute('SELECT COUNT(*) as reports FROM reports WHERE status = "pending"')
-                pending_reports = cursor.fetchone()['pending']
+                cursor.execute('SELECT COUNT(*) as active FROM users WHERE last_resource_update > ?', 
+                             (int(time.time()) - 86400,))
+                active_users = cursor.fetchone()['active']
                 
                 text = [
                     "📈 <b>آمار کلی سیستم</b>",
                     "",
                     f"🏛️ تعداد قبایل: {clans:,}",
-                    f"👥 اعضای قبایل: {clan_members:,}",
-                    f"⚔️ تعداد حمله‌ها: {attacks:,}",
-                    f"⚠️ گزارش‌های در انتظار: {pending_reports:,}",
-                    "",
+                    f"👥 کاربران فعال: {active_users:,}",
                     f"🕐 زمان سرور: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 ]
                 
                 await callback.message.answer("\n".join(text), parse_mode=ParseMode.HTML)
             
             await callback.answer()
+        
+        @self.dp.callback_query(F.data == "clan_members")
+        async def callback_clan_members(callback: CallbackQuery):
+            """اعضای قبیله"""
+            user_id = callback.from_user.id
+            user = self.db.get_user(user_id)
+            
+            if not user or not user['clan_id']:
+                await callback.message.answer("⚠️ شما در قبیله‌ای عضو نیستید!")
+                await callback.answer()
+                return
+            
+            members = self.db.get_clan_members(user['clan_id'])
+            clan = self.db.get_clan(user['clan_id'])
+            
+            text = [f"👥 <b>اعضای قبیله {clan['name']}</b>", ""]
+            
+            for member in members:
+                role_icon = "👑" if member['clan_role'] == 'leader' else "⭐" if member['clan_role'] == 'co-leader' else "👤"
+                text.append(f"{role_icon} {member['game_name']} (سطح {member['level']})")
+            
+            keyboard = InlineKeyboardBuilder()
+            keyboard.add(InlineKeyboardButton(text="🔙 بازگشت", callback_data="clan"))
+            
+            await callback.message.edit_text(
+                "\n".join(text),
+                reply_markup=keyboard.as_markup(),
+                parse_mode=ParseMode.HTML
+            )
+            await callback.answer()
+        
+        @self.dp.callback_query(F.data == "clan")
+        async def callback_clan_menu(callback: CallbackQuery):
+            """بازگشت به منوی قبیله"""
+            await cmd_clan(callback.message)
+            await callback.answer()
+        
+        # ========== Text Message Handler ==========
+        
+        @self.dp.message()
+        async def handle_text(message: Message):
+            """مدیریت پیام‌های متنی"""
+            # اگر پیام دستور نیست، نادیده بگیر
+            pass
     
     async def _show_main_menu(self, message: Message, user: Dict):
         """نمایش منوی اصلی"""
@@ -1959,8 +1452,7 @@ class AmeleClashBot:
             
             await self.bot.set_webhook(
                 url=webhook_url,
-                drop_pending_updates=True,
-                secret_token=os.getenv("WEBHOOK_SECRET", None)
+                drop_pending_updates=True
             )
             
             webhook_info = await self.bot.get_webhook_info()
@@ -2000,13 +1492,17 @@ class AmeleClashBot:
             logger.info(f"🤖 Bot: @{bot_info.username}")
             logger.info(f"🆔 Bot ID: {bot_info.id}")
             logger.info(f"👑 Admin ID: {ADMIN_ID}")
-            logger.info(f"🌐 Web Panel: http://localhost:{PORT}")
-            logger.info(f"📊 Database: {DATABASE_URL}")
+            logger.info(f"🌐 Port: {PORT}")
             logger.info("=" * 50)
             logger.info("✅ AmeleClashBot is ready and running!")
             
-            # اجرای نامحدود
-            await asyncio.Future()
+            # اگر وب‌هوک نیست، پولینگ شروع کن
+            if not WEBHOOK_URL:
+                logger.info("🔄 Starting polling...")
+                await self.dp.start_polling(self.bot)
+            else:
+                # اجرای نامحدود برای وب‌هوک
+                await asyncio.Future()
             
         except asyncio.CancelledError:
             logger.info("⏹️ Bot stopped by user")
@@ -2027,7 +1523,7 @@ async def main():
     banner = """
     ╔══════════════════════════════════════════════════╗
     ║             A M E L E  C L A S H                 ║
-    ║                 B O T   v2.0.0                   ║
+    ║                 B O T   v2.0.1                   ║
     ╠══════════════════════════════════════════════════╣
     ║   🏰  بازی استراتژیک متنی Clash of Clans        ║
     ║   🤖  توسعه یافته با Python + aiogram 3.x       ║
@@ -2070,18 +1566,6 @@ if __name__ == "__main__":
     
     3. Start Command: python main.py
     
-    =================================================================
-    🔧 نکات مهم:
-    
-    1. برای تست پنل ادمین، آی‌دی ADMIN_ID را به آی‌دی خودتان تغییر دهید
-    2. ربات به طور خودکار دیتابیس را ایجاد می‌کند
-    3. برای ریست کامل، فایل ameleclash.db را حذف کنید
-    4. لاگ‌ها را در کنسول Render مشاهده کنید
-    
-    =================================================================
-    📞 پشتیبانی:
-    
-    در صورت مشکل، لاگ‌ها را بررسی کرده و آی‌دی ادمین را تنظیم کنید
     =================================================================
     """
     
