@@ -30,7 +30,7 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-# برای aiohttp نسخه جدید
+# برای aiohttp
 try:
     from aiohttp import web
 except ImportError:
@@ -233,46 +233,9 @@ class Database:
         self.conn.commit()
         return self.get_user(user_id)
     
-    def update_user_resources(self, user_id: int):
-        user = self.db.get_user(user_id)
-        if not user:
-            return
-        
-        now = int(time.time())
-        last_update = user.get('last_resource_update', now)
-        
-        # محاسبه منابع تولید شده
-        time_diff = max(0, now - last_update)
-        
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT mine_level, collector_level FROM buildings WHERE user_id = ?', (user_id,))
-        building = cursor.fetchone()
-        
-        if building:
-            mine_level, collector_level = building
-            # تولید منابع بر اساس سطح ساختمان
-            coins_produced = int(time_diff * (GameConfig.BASE_COIN_PRODUCTION * mine_level))
-            elixir_produced = int(time_diff * (GameConfig.BASE_ELIXIR_PRODUCTION * collector_level))
-            
-            # اعمال محدودیت ظرفیت (بر اساس سطح تاون هال)
-            cursor.execute('SELECT townhall_level FROM buildings WHERE user_id = ?', (user_id,))
-            townhall_level = cursor.fetchone()[0]
-            max_capacity = townhall_level * 5000
-            
-            new_coins = min(user['coins'] + coins_produced, max_capacity)
-            new_elixir = min(user['elixir'] + elixir_produced, max_capacity)
-            
-            cursor.execute('''
-                UPDATE users 
-                SET coins = ?, elixir = ?, last_resource_update = ? 
-                WHERE user_id = ?
-            ''', (new_coins, new_elixir, now, user_id))
-            
-            self.conn.commit()
-    
     # متدهای قبایل
     def create_clan(self, name: str, leader_id: int, description: str = ""):
-        cursor = self.conn.cursor()
+        cursor = self.db.conn.cursor()
         try:
             cursor.execute('''
                 INSERT INTO clans (name, leader_id, description) 
@@ -729,6 +692,7 @@ class AmeleClashBot:
         self.app = None
         self.runner = None
         self.site = None
+        self.handler = None
     
     async def setup(self):
         """تنظیم اولیه ربات"""
@@ -744,9 +708,23 @@ class AmeleClashBot:
         # ثبت هندلرها
         self.register_handlers()
         
-        # ایجاد برنامه web
+        # ایجاد برنامه web و اضافه کردن مسیرها
         self.app = web.Application()
+        
+        # اضافه کردن مسیر پنل وب
         self.app.router.add_get('/{tail:.*}', self.web_panel.handle_request)
+        
+        # ایجاد هندلر وب‌هوک
+        self.handler = SimpleRequestHandler(
+            dispatcher=self.dp,
+            bot=self.bot,
+        )
+        
+        # اضافه کردن مسیر وب‌هوک قبل از راه‌اندازی
+        self.app.router.add_post("/webhook", self.handler)
+        
+        # تنظیم برنامه aiogram
+        setup_application(self.app, self.dp, bot=self.bot)
         
         # رانر وب‌سرور
         self.runner = web.AppRunner(self.app)
@@ -797,15 +775,12 @@ class AmeleClashBot:
     async def cmd_profile(self, message: Message):
         """نمایش پروفایل"""
         user_id = message.from_user.id
+        self.update_user_resources(user_id)
         user = self.db.get_user(user_id)
         
         if not user:
             await message.answer("⚠️ ابتدا با /start ثبت نام کنید!")
             return
-        
-        # آپدیت منابع
-        self.update_user_resources(user_id)
-        user = self.db.get_user(user_id)
         
         # اطلاعات ساختمان‌ها
         cursor = self.db.conn.cursor()
@@ -1521,27 +1496,15 @@ class AmeleClashBot:
     
     async def run(self):
         """اجرای اصلی ربات"""
-        await self.setup()
-        await self.start_webhook()
-        
-        # تنظیم وب‌هوک هندلر
-        handler = SimpleRequestHandler(
-            dispatcher=self.dp,
-            bot=self.bot,
-        )
-        
-        # اضافه کردن هندلر وب‌هوک
-        self.app.router.add_post("/webhook", handler)
-        
-        # تنظیم برنامه
-        setup_application(self.app, self.dp, bot=self.bot)
-        
-        print("✅ ربات آماده و در حال اجرا است...")
-        print(f"🌐 پنل وب: http://localhost:{PORT}")
-        print(f"🤖 لینک ربات: https://t.me/{(await self.bot.get_me()).username}")
-        
-        # اجرای نامحدود
         try:
+            await self.setup()
+            await self.start_webhook()
+            
+            print("✅ ربات آماده و در حال اجرا است...")
+            print(f"🌐 پنل وب: http://localhost:{PORT}")
+            print(f"🤖 لینک ربات: https://t.me/{(await self.bot.get_me()).username}")
+            
+            # اجرای نامحدود
             await asyncio.Future()  # اجرای نامحدود
         except asyncio.CancelledError:
             pass
